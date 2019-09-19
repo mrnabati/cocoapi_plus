@@ -1,114 +1,73 @@
 """
 An enhanced interface for the Microsoft COCO dataset.
 
-This API adds more functionalities to the original COCO API available here:
-https://github.com/cocodataset/cocoapi
 """
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import skimage.io as io
 import os
 import json
 import cv2
 import types
-import sys
 import datetime
-import copy
 import time
-
 from tqdm import tqdm
-from skimage import measure
 from pycocotools.coco import COCO
-from collections import defaultdict
+from pycocotools import mask
+# from collections import defaultdict
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
+from utils.logging import initialize_logger
 
 class COCO_PLUS(COCO):
 
-    CAT_ID = 100            # Initial value for new Category IDs
-    ANN_ID = 100000000000   # Initial value for new Annotation IDs
-    IMG_ID = 10000000       # Initial value for new Image IDs
-    PCL_ID = 10000000       # # Initial value for new Pointcloud IDs
+    CAT_ID = 0       # Initial value for Category IDs
+    ANN_ID = 0       # Initial value for Annotation IDs
+    IMG_ID = 0       # Initial value for Image IDs
+    PCL_ID = 0       # Initial value for Pointcloud IDs
+    STR_ID_LEN = 8   # String ID length for filenames
 
-    def __init__(self, ann_file, imgs_dir, new_dataset=False, info=None):
+    def __init__(self, 
+                 annotation_file=None, 
+                 logging_level="INFO"):
         """
-        Constructor of helper class for generating, reading and visualizing
-        annotations for the coco dataset.
-        :param
-        :return:
+        :param annotation_file (str): an existing coco annotation file
+        :param logging_level (str): set the logging level (DEBUG, INFO, WARN, ERROR, CRITICAL)
         """
 
-        self.dataset,self.anns,self.cats,self.imgs = dict(),dict(),dict(),dict()
+        self.logger = initialize_logger(__name__, level=logging_level)
+        self.dataset_dir = dataset_dir
+        self.annotation_file = annotation_file
+        self.pointclouds, self.imgToPc = dict(), dict()
         self.imgToAnns, self.catToImgs = defaultdict(list), defaultdict(list)
-        self.catNameToId, self.pointclouds, self.imgToPointcloud = dict(), dict(), dict()
+        self.dataset, self.anns, self.cats, self.imgs = dict(), dict(), dict(), dict()
+                
 
-        self.imgs_dir = imgs_dir
-        self.ann_file = ann_file
-        anns_dir = os.path.dirname(ann_file)
-
-        if new_dataset:
-            print('Creating new COCO-style dataset.')
-            os.makedirs(imgs_dir, exist_ok=True)
-            os.makedirs(anns_dir, exist_ok=True)
-            self.initiate_dataset(info)
-
-        else:
-            if not os.path.exists(ann_file):
-                raise Exception("Annotation file '{}' not found.".format(ann_file))
-            if not os.path.exists(imgs_dir):
-                raise Exception('COCO images directory not found.')
-
-            print('loading annotations into memory...')
+        if not annotation_file == None:
+            self.logger.info('loading COCO annotations into memory...')
             tic = time.time()
-            dataset = json.load(open(ann_file, 'r'))
-            assert type(dataset)==dict, 'annotation file format {} not supported'.format(type(dataset))
-            print('Done (t={:0.2f}s)'.format(time.time()- tic))
+            dataset = json.load(open(annotation_file, 'r'))
+            assert type(dataset)==dict, \
+                'annotation file format {} not supported'.format(type(dataset))
+            
+            self.logger.info('Done (t={:0.2f}s)'.format(time.time()- tic))
             self.dataset = dataset
             self.createIndex()
-
-
-    ##-------------------------------------------------------------------------
-    def initiate_dataset(self, info):
-
-        self.dataset = {'annotations':[], 'images':[], 'categories':[]}
-
-        if info is not None:
-            self.dataset['info'] = info['info']
-            self.dataset['licenses'] = info['licenses']
-
-        else:
-            self.dataset['info'] = {
-                "description": "...",
-        		"url": "...",
-        		"version": "1.0",
-        		"year": 2018,
-        		"contributor": "...",
-        		"date_created": "..."
-            }
-            self.dataset['licenses'] = [
-                {
-    			"url": "...",
-    			"id": 1,
-    			"name": "..."
-                }
-            ]
-
+    
     ##-------------------------------------------------------------------------
     def createIndex(self):
         """
         Create index for the annotations
         """
 
+        super(COCO_PLUS, self).createIndex()
         catNameToId = dict()
         pointclouds = dict()
-        imgToPointcloud = dict()
-        super(COCO_PLUS, self).createIndex()
+        imgToPc = dict()
 
         if 'pointclouds' in self.dataset:
             for pc in self.dataset['pointclouds']:
-                imgToPointcloud[pc['img_id']] = pc
+                imgToPc[pc['img_id']] = pc
                 pointclouds[pc['id']] = pc
 
         if 'categories' in self.dataset:
@@ -117,64 +76,106 @@ class COCO_PLUS(COCO):
 
         self.catNameToId = catNameToId
         self.pointclouds = pointclouds
-        self.imgToPointcloud = imgToPointcloud
-        print('index created.')
+        self.imgToPc = imgToPc
+        self.logger.info('index created.')
 
+    ##-------------------------------------------------------------------------
+    def create_new_dataset(self,
+                           dataset_dir, 
+                           split,
+                           description="",
+                           url="",
+                           version="",
+                           year=0,
+                           contributor="",
+                           date_created="",
+                           license_url="",
+                           license_id=0,
+                           license_name=""
+                           ):
+        """
+        Create a new COCO-style dataset
+        :param dataset_dir (str): location of new dataset
+        :param split (str): Dataset split {'train', 'val', 'test'}
+        :param description (str):
+        :param url (str):
+        :param version (str):
+        :param year (int):
+        :param contributor (str):
+        :param date_created (str):
+        :param license_url (str):
+        :param license_id (int):
+        :param license_name (str):
+        """
+
+        self.logger.info('Creating an empty COCO dataset at {}'.format(self.dataset_dir))
+        assert self.annotation_file is None, \
+            "COCO dataset is already initialized with the annotation file: {}".format(self.annotation_file)
+        
+        ## Create the dataset directory
+        self.imgs_dir = os.path.join(dataset_dir, split)
+        os.makedirs(self.imgs_dir, exist_ok=True)
+        anns_dir = os.path.join(dataset_dir, 'annotations')
+        os.makedirs(anns_dir, exist_ok=True)
+
+        self.annotation_file = os.path.join(anns_dir, 
+                                            "instances_{}.json".format(split))        
+        ## Create class members
+        self.catNameToId = {}
+        self.pointclouds = {}
+        self.imgToPc = {}
+        self.dataset = {'annotations':[], 'images':[], 'categories':[]}
+        self.dataset['info'] = {
+            "description": description,
+            "url": url,
+            "version": version,
+            "year": year,
+            "contributor": contributor,
+            "date_created": date_created}
+        self.dataset['licenses'] = [{
+            "url": license_url,
+            "id": license_id,
+            "name": license_name}]
 
 
     ##-------------------------------------------------------------------------
-    def createImageInfo(self, img, img_id=None, license=0, flickr_url='N/A',
-                        coco_url='N/A', date_captured=None):
+    def addSample(self,
+                  img, 
+                  anns, 
+                  pointcloud=None,
+                  img_id=None,
+                  img_format='BGR', 
+                  write_img=True,
+                  other=None):
         """
-        Generate image info in COCO format
-
-        :param img: nparray
-        :param img_id
-        """
-
-        if date_captured is None:
-            date_captured = datetime.datetime.utcnow().isoformat(' ')
-
-        if img_id is not None:
-            filename = self.imId2name(img_id)
-        else:
-            filename = None
-
-        img_height, img_width = img.shape[0], img.shape[1]
-
-        img_info={"id" : img_id,
-                  "width" : img_width,
-                  "height" : img_height,
-                  "file_name" : filename,
-                  "license" : license,
-                  "flickr_url" : flickr_url,
-                  "coco_url" : coco_url,
-                  "date_captured" : date_captured
-                  }
-
-        return img_info
-
-
-    ##-------------------------------------------------------------------------
-    def addSample(self, img, anns, pointcloud=None, img_format='BGR'):
-        """
-        Add a new image and its annotations to the dataset.
+        Add a new sample (image + annotations [+ pointcloud]) to the dataset.
 
         :param img (nparray)
         :param anns (list of dict)
         :param pointcloud (list): list of the points in the pointcloud
+        :param img_id (int): image ID 
         :param img_format (str): 'BGR' or 'RGB'
+        :param write_img (bool): save the image to the image directory
+        :param other (dict): any additional information to be stored in img_info
         """
 
         # Sanity check
-        assert img_format=='BGR' or img_format=='RGB', "Image format not supported."
+        assert img_format in ['BGR','RGB'], "Image format not supported."
         assert isinstance(anns, (list,)), "Annotations must be provided in a list."
         assert isinstance(img, np.ndarray), "Image must be a numpy array."
 
-        # Create image info
-        img_id = self._getNewImgId()
-        img_info = self.createImageInfo(img, img_id)
+        if img_id is None:
+            img_id = self._getNewImgId()
+        else:
+            assert isinstance(img_id, int), "Image ID must be an integer."
+            assert img_id not in self.imgs, "Image ID {} already exists.".format(img_id)
 
+        # Create the image info
+        heigth, width, _ = img.shape
+        img_info = self._createImageInfo(height=heigth, 
+                                         width=width, 
+                                         img_id=img_id,
+                                         other=other)
         # Update the dataset and index
         self.dataset['images'].append(img_info)
         self.imgs[img_id] = img_info
@@ -194,7 +195,7 @@ class COCO_PLUS(COCO):
             self.catToImgs[ann['category_id']].append(ann['image_id'])
             self.imgToAnns[img_id].append(ann)
 
-        ## Add the new pointcloud to the dataset if applicable
+        ## Add the pointcloud to the dataset if applicable
         if pointcloud is not None:
             assert isinstance(pointcloud,(list,)), "Pointcloud must be a list of points."
 
@@ -203,19 +204,67 @@ class COCO_PLUS(COCO):
                   'img_id': img_id,
                   'points': pointcloud}
 
-            if 'pointclouds' not in self.dataset:
-                self.dataset['pointclouds'] = []
-
             self.dataset['pointclouds'].append(pc)
             self.pointclouds[pc_id] = pc
-            self.imgToPointcloud[img_id] = pc
+            self.imgToPc[img_id] = pc
+        
+        if self.imgs[img_id]['id'] != pc['img_id']:
+            raise Exception("Image ID not matching the corresponding pointcloud")
 
-        if img_format == 'RGB':
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-        ## Save the new image to disk
         img_path = os.path.join(self.imgs_dir, img_info['file_name'])
-        cv2.imwrite(img_path, img)
+        
+        if write_img:
+            ## Write the image to disk        
+            if img_format == 'RGB':
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(img_path, img)
+        
+        return img_path
+
+    ##-------------------------------------------------------------------------
+    def _createImageInfo(self, 
+                         height,
+                         width, 
+                         img_id=None, 
+                         license=0, 
+                         flickr_url='',
+                         coco_url='', 
+                         date_captured=None,
+                         other=None,
+                         ):
+        """
+        Generate image info in COCO format
+        :param height: Image height
+        :param width: Image width
+        :param img_id : Image ID
+        :param license (int)
+        :param flickr_url (str)
+        :param coco_url (str)
+        :param date_captured (str)
+        :param other (dict)
+        """
+
+        if date_captured is None:
+            date_captured = datetime.datetime.utcnow().isoformat(' ')
+
+        if img_id is not None:
+            filename = self.imId2name(img_id)
+        else:
+            filename = None
+
+        img_info={"id" : img_id,
+                  "width" : width,
+                  "height" : height,
+                  "file_name" : filename,
+                  "license" : license,
+                  "flickr_url" : flickr_url,
+                  "coco_url" : coco_url,
+                  "date_captured" : date_captured,
+                  "other": other
+                  }
+
+        return img_info
+
 
     ##-------------------------------------------------------------------------
     def addCategory(self, category, supercat, new_cat_id=None):
@@ -235,10 +284,10 @@ class COCO_PLUS(COCO):
             # Add the new category
             if new_cat_id is None:
                 cat_id = self._getNewCatId()
-
             else:
+                assert isinstance(new_cat_id, int), "CAT ID must be an integer."
                 assert new_cat_id not in self.cats, \
-                "cat_id '{}' already exists.".format(new_cat_id)
+                    "cat_id '{}' already exists.".format(new_cat_id)
                 cat_id = new_cat_id
 
             coco_cat = {'id':cat_id, 'name':category, 'supercategory':supercat}
@@ -247,9 +296,6 @@ class COCO_PLUS(COCO):
             self.dataset['categories'].append(coco_cat)
             self.catNameToId[category] = cat_id
             self.cats[cat_id] = coco_cat
-
-        except:
-            raise
 
         return cat_id
 
@@ -260,9 +306,8 @@ class COCO_PLUS(COCO):
         Save the annotations to disk
         """
 
-        ## Write the annotations to file
         if ann_file is None:
-            ann_file = self.ann_file
+            ann_file = self.annotation_file
 
         with open(ann_file, 'w') as fp:
             json.dump(self.dataset, fp)
@@ -271,7 +316,6 @@ class COCO_PLUS(COCO):
     ##-------------------------------------------------------------------------
     def _getNewImgId(self):
         """ Generate a new image ID
-
         :return (int): img_id
         """
 
@@ -284,9 +328,9 @@ class COCO_PLUS(COCO):
     ##-------------------------------------------------------------------------
     def _getNewPclId(self):
         """ Generate a new pointcloud ID
-
         :return (int): pc_id
         """
+
         newPclId = COCO_PLUS.PCL_ID
         COCO_PLUS.PCL_ID += 1
 
@@ -296,7 +340,6 @@ class COCO_PLUS(COCO):
     def _getNewAnnId(self):
         """
         Generate a new annotation ID
-
         :return (int): ann_id
         """
 
@@ -309,9 +352,9 @@ class COCO_PLUS(COCO):
     def _getNewCatId(self):
         """
         Generate a new category ID
-
         :return (int): cat_id
         """
+
         newCatId = COCO_PLUS.CAT_ID
         COCO_PLUS.CAT_ID += 1
 
@@ -320,10 +363,22 @@ class COCO_PLUS(COCO):
 
     ##-------------------------------------------------------------------------
     @staticmethod
-    def createAnn(bbox, cat_id, segmentation=None, area=None, iscrowd=0,
+    def createAnn(bbox, 
+                  cat_id, 
+                  img_id=None,
+                  segmentation=None, 
+                  area=None, 
+                  iscrowd=0,
                   ann_id=None):
         """
         Create an annotation in COCO annotation format
+        :param bbox (list):
+        :param cat_id (int):
+        :param img_id (int):
+        :param segmentation (list):
+        :param area (float):
+        :param iscrowd (bool):
+        :param ann_id (int):
         """
 
         bbox = [float(format(elem, '.2f')) for elem in bbox]
@@ -338,7 +393,7 @@ class COCO_PLUS(COCO):
 
         annotation = {
             "id": ann_id,
-            "image_id": None,
+            "image_id": img_id,
             "category_id": cat_id,
             "segmentation": segmentation,
             "area": area,
@@ -353,16 +408,16 @@ class COCO_PLUS(COCO):
         """
         Convert polygon annotation segmentation to RLE.
         :param poly (list): Input polygon
-        :param
-        :param
+        :param im_height (int): Image height
+        :param im_width (int): Image width
         :return: RLE
         """
+
         assert type(poly) == list, "Poly must be a list of polygon vertices"
 
         # polygon -- a single object might consist of multiple parts
         # we merge all parts into one mask rle code
-        h, w = im_height, im_width
-        rles = mask.frPyObjects(poly, h, w)
+        rles = mask.frPyObjects(poly, im_height, im_width)
         rle = mask.merge(rles)
 
         return rle
@@ -381,15 +436,19 @@ class COCO_PLUS(COCO):
         return file_path
 
     ##-------------------------------------------------------------------------
-    @staticmethod
-    def imId2name(im_id):
+    def imId2name(self, im_id):
         """
         Returns the COCO image name given its ID
         :im_id (int): image ID
         :return (str): image name
         """
-
-        name = str(im_id).zfill(12) + '.jpg'
+        
+        if isinstance(im_id, int):
+            name = str(im_id).zfill(self.STR_ID_LEN) + '.jpg'
+        elif isinstance(im_id, str):
+            name = im_id + '.jpg'
+        else:
+            raise AssertionError('Image ID should be of type string or int')
         return name
 
     ##-------------------------------------------------------------------------
@@ -402,6 +461,7 @@ class COCO_PLUS(COCO):
             is displayed.
         :param BGR (binary): Image format, BGR or RGB
         """
+
         plt.cla()
         if BGR:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -418,8 +478,11 @@ class COCO_PLUS(COCO):
         """
         Display the specified annotations.
         :param anns (array of object): annotations to display
+        :param bbox_only (bool):
+        :param ax (axis):
         :return: None
         """
+
         if len(anns) == 0:
             return 0
         if 'segmentation' in anns[0] or 'keypoints' in anns[0]:
@@ -456,13 +519,13 @@ class COCO_PLUS(COCO):
                         # mask
                         t = self.imgs[ann['image_id']]
                         if type(ann['segmentation']['counts']) == list:
-                            rle = maskUtils.frPyObjects([ann['segmentation']], t['height'], t['width'])
+                            rle = mask.frPyObjects([ann['segmentation']], t['height'], t['width'])
                         else:
                             rle = [ann['segmentation']]
-                        m = maskUtils.decode(rle)
+                        m = mask.decode(rle)
                         img = np.ones( (m.shape[0], m.shape[1], 3) )
                         if ann['iscrowd'] == 1:
-                            color_mask = np.array([2.0,166.0,101.0])/255
+                            color_mask = np.array([2.0,166.0,101.0])/255 
                         if ann['iscrowd'] == 0:
                             color_mask = np.random.random((1, 3)).tolist()[0]
                         for i in range(3):
