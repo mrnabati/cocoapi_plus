@@ -1,15 +1,6 @@
-#!/usr/bin/env python3
-################################################################################
-## Date Created  : July 7th, 2019                                             ##
-## Authors       : Landon Harris, Ramin Nabati                                ##
-## Last Modified : July 29th, 2019                                            ##
-## Copyright (c) 2019                                                         ##
-################################################################################
-
 import os
 import cv2
 
-# from _context import cocoplus.coco
 from _context import cocoplus
 
 

@@ -11,13 +11,15 @@ import cv2
 import types
 import datetime
 import time
+import pprint
 from tqdm import tqdm
 from pycocotools.coco import COCO
 from pycocotools import mask
-# from collections import defaultdict
+from collections import defaultdict
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
-from utils.logging import initialize_logger
+from cocoplus.utils import log
+from cocoplus.utils.coco_utils import show_class_name_plt
 
 class COCO_PLUS(COCO):
 
@@ -26,6 +28,7 @@ class COCO_PLUS(COCO):
     IMG_ID = 0       # Initial value for Image IDs
     PCL_ID = 0       # Initial value for Pointcloud IDs
     STR_ID_LEN = 8   # String ID length for filenames
+    pp = pprint.PrettyPrinter(indent=4)
 
     def __init__(self, 
                  annotation_file=None, 
@@ -35,13 +38,11 @@ class COCO_PLUS(COCO):
         :param logging_level (str): set the logging level (DEBUG, INFO, WARN, ERROR, CRITICAL)
         """
 
-        self.logger = initialize_logger(__name__, level=logging_level)
-        self.dataset_dir = dataset_dir
+        self.logger = log.getLogger(__name__, console_level=logging_level)
         self.annotation_file = annotation_file
         self.pointclouds, self.imgToPc = dict(), dict()
         self.imgToAnns, self.catToImgs = defaultdict(list), defaultdict(list)
         self.dataset, self.anns, self.cats, self.imgs = dict(), dict(), dict(), dict()
-                
 
         if not annotation_file == None:
             self.logger.info('loading COCO annotations into memory...')
@@ -108,6 +109,7 @@ class COCO_PLUS(COCO):
         :param license_name (str):
         """
 
+        self.dataset_dir = os.path.abspath(dataset_dir)
         self.logger.info('Creating an empty COCO dataset at {}'.format(self.dataset_dir))
         assert self.annotation_file is None, \
             "COCO dataset is already initialized with the annotation file: {}".format(self.annotation_file)
@@ -124,7 +126,7 @@ class COCO_PLUS(COCO):
         self.catNameToId = {}
         self.pointclouds = {}
         self.imgToPc = {}
-        self.dataset = {'annotations':[], 'images':[], 'categories':[]}
+        self.dataset = {'annotations':[], 'images':[], 'categories':[], 'pointclouds':[]}
         self.dataset['info'] = {
             "description": description,
             "url": url,
@@ -179,8 +181,8 @@ class COCO_PLUS(COCO):
         # Update the dataset and index
         self.dataset['images'].append(img_info)
         self.imgs[img_id] = img_info
-
-        ## Add the new annotation to the dataset
+        
+        ## Add the new annotations to dataset
         for ann in anns:
             assert ann['category_id'] in self.cats, \
             "Category '{}' does not exist in dataset.".format(ann['category_id'])
@@ -298,6 +300,20 @@ class COCO_PLUS(COCO):
             self.cats[cat_id] = coco_cat
 
         return cat_id
+    
+
+    ##-------------------------------------------------------------------------
+    def setCategories(self, categories):
+        """
+        Set all the categories for the dataset.
+        :param categories <dict>: categories dictionary in the coco.dataset['categories']
+         format.
+         """
+        self.dataset['categories'] = categories
+
+        for cat in categories:
+            self.catNameToId[cat['name']] = cat['id']
+            self.cats[cat['id']] = cat
 
 
     ##-------------------------------------------------------------------------
@@ -369,7 +385,7 @@ class COCO_PLUS(COCO):
                   segmentation=None, 
                   area=None, 
                   iscrowd=0,
-                  ann_id=None):
+                  id=None):
         """
         Create an annotation in COCO annotation format
         :param bbox (list):
@@ -378,7 +394,7 @@ class COCO_PLUS(COCO):
         :param segmentation (list):
         :param area (float):
         :param iscrowd (bool):
-        :param ann_id (int):
+        :param id (int):
         """
 
         bbox = [float(format(elem, '.2f')) for elem in bbox]
@@ -392,7 +408,7 @@ class COCO_PLUS(COCO):
         area = np.float32(area).tolist()
 
         annotation = {
-            "id": ann_id,
+            "id": id,
             "image_id": img_id,
             "category_id": cat_id,
             "segmentation": segmentation,
@@ -423,19 +439,6 @@ class COCO_PLUS(COCO):
         return rle
 
     ##-------------------------------------------------------------------------
-    def imId2path(self, im_id):
-        """
-        Returns the COCO image path given its ID
-        :im_id (int): image ID
-        :return (str): image path
-        """
-
-        file_name = self.imgs[im_id]["file_name"]
-        file_path = os.path.join(self.imgs_dir, file_name)
-
-        return file_path
-
-    ##-------------------------------------------------------------------------
     def imId2name(self, im_id):
         """
         Returns the COCO image name given its ID
@@ -459,18 +462,23 @@ class COCO_PLUS(COCO):
         :param img (numpy array): The background image
         :param ann (list): A list of annotations. If empty, only the image
             is displayed.
-        :param BGR (binary): Image format, BGR or RGB
+        :param BGR (binary): True for BGR, False for RGB
         """
 
         plt.cla()
         if BGR:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        if ax is None:
+            _, ax = plt.subplots(1, 1, figsize=(9, 9))
 
-        plt.imshow(img); plt.axis('off')
+        ax.imshow(img); 
+        plt.axis('off')
 
         if anns is not None:
-            self.showAnns(anns, bbox_only, ax)
-        plt.show()
+            ax = self.showAnns(anns, bbox_only, ax)
+        # plt.show()
+        return ax
 
 
     ##-------------------------------------------------------------------------
@@ -485,16 +493,19 @@ class COCO_PLUS(COCO):
 
         if len(anns) == 0:
             return 0
+
+        if ax is None:
+                ax = plt.gca()
+                ax.set_autoscale_on(False)
+        
         if 'segmentation' in anns[0] or 'keypoints' in anns[0]:
             datasetType = 'instances'
         elif 'caption' in anns[0]:
             datasetType = 'captions'
         else:
             raise Exception('datasetType not supported')
+        
         if datasetType == 'instances':
-            if ax is None:
-                ax = plt.gca()
-                ax.set_autoscale_on(False)
             polygons = []
             color = []
             for ann in anns:
@@ -506,6 +517,10 @@ class COCO_PLUS(COCO):
                     np_poly = np.array(poly).reshape((4,2))
                     polygons.append(Polygon(np_poly))
                     color.append(c)
+
+                    cat_id = ann['category_id']
+                    clss_txt = str(cat_id) + ':' + self.cats[cat_id]['name']
+                    show_class_name_plt([bbox_x, bbox_y], clss_txt, ax, c)
                     continue
 
                 if 'segmentation' in ann:
@@ -531,6 +546,7 @@ class COCO_PLUS(COCO):
                         for i in range(3):
                             img[:,:,i] = color_mask[i]
                         ax.imshow(np.dstack( (img, m*0.5) ))
+                
                 if 'keypoints' in ann and type(ann['keypoints']) == list:
                     # turn skeleton into zero-based index
                     sks = np.array(self.loadCats(ann['category_id'])[0]['skeleton'])-1
@@ -548,6 +564,9 @@ class COCO_PLUS(COCO):
             ax.add_collection(p)
             p = PatchCollection(polygons, facecolor='none', edgecolors=color, linewidths=2)
             ax.add_collection(p)
+        
         elif datasetType == 'captions':
             for ann in anns:
                 print(ann['caption'])
+
+        return ax

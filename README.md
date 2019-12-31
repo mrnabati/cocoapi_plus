@@ -9,11 +9,17 @@ These functionalities include:
 - Modifying existing annotations
 - Adding new annotations to existing samples
 
-The original COCO API must be installed before using the COCO_Plus API.
-
 ## Installation
-- Install [pycocotools](https://github.com/cocodataset/cocoapi) to your Python site-packages
-- Clone this repo and import the coco_plus class
-  ```python
-  from coco_plus import COCO_PLUS
-  ```
+
+### Requirements
+- Linux or macOS
+- Python>= 3.6
+- pycocotools: `pip install cython pycocotools`
+
+### Build COCO_Plus
+After having the above dependencies, run:
+```bash
+git clone https://github.com/mrnabati/cocoapi_plus.git
+cd cocoapi_plus
+pip install -e .
+```
