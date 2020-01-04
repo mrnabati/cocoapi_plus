@@ -110,7 +110,7 @@ class COCO_PLUS(COCO):
         """
 
         self.dataset_dir = os.path.abspath(dataset_dir)
-        self.logger.info('Creating an empty COCO dataset at {}'.format(self.dataset_dir))
+        self.logger.info('Creating empty COCO dataset in {}'.format(self.dataset_dir))
         assert self.annotation_file is None, \
             "COCO dataset is already initialized with the annotation file: {}".format(self.annotation_file)
         
@@ -210,8 +210,8 @@ class COCO_PLUS(COCO):
             self.pointclouds[pc_id] = pc
             self.imgToPc[img_id] = pc
         
-        if self.imgs[img_id]['id'] != pc['img_id']:
-            raise Exception("Image ID not matching the corresponding pointcloud")
+            if self.imgs[img_id]['id'] != pc['img_id']:
+                raise Exception("Image ID not matching the corresponding pointcloud")
 
         img_path = os.path.join(self.imgs_dir, img_info['file_name'])
         
@@ -385,7 +385,8 @@ class COCO_PLUS(COCO):
                   segmentation=None, 
                   area=None, 
                   iscrowd=0,
-                  id=None):
+                  id=None,
+                  distance=0):
         """
         Create an annotation in COCO annotation format
         :param bbox (list):
@@ -414,7 +415,8 @@ class COCO_PLUS(COCO):
             "segmentation": segmentation,
             "area": area,
             "bbox": bbox,
-            "iscrowd": iscrowd
+            "iscrowd": iscrowd,
+            "distance": distance,
             }
 
         return annotation
@@ -519,7 +521,11 @@ class COCO_PLUS(COCO):
                     color.append(c)
 
                     cat_id = ann['category_id']
-                    clss_txt = str(cat_id) + ':' + self.cats[cat_id]['name']
+                    dist = ann['distance']
+                    if dist:
+                        clss_txt = str(cat_id) + ':' + self.cats[cat_id]['name'] + ':' + str(dist)
+                    else:
+                        clss_txt = str(cat_id) + ':' + self.cats[cat_id]['name']
                     show_class_name_plt([bbox_x, bbox_y], clss_txt, ax, c)
                     continue
 
